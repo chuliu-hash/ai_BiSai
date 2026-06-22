@@ -64,13 +64,15 @@ _DEFEND_ROOT = Path(defend_group.__file__).parent
 _TEAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RESERVED_TEAMS = {"__init__", "__pycache__"}
 
-# 前端开发服务器来源（Vite 默认 5173）
-_CORS_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:5174",
-    "http://127.0.0.1:5174",
-]
+# 允许的前端来源（CORS）。
+# 默认放开为 ["*"]：适配本地 localhost / 远程内部平台（如 quchiai）等多种域名。
+# 如需收紧，设置环境变量 CORS_ORIGINS（逗号分隔），例如：
+#   CORS_ORIGINS=http://localhost:5173,https://workbench-xxx.quchiai.com
+_env_cors = os.environ.get("CORS_ORIGINS", "").strip()
+_CORS_ORIGINS = (
+    [o.strip() for o in _env_cors.split(",") if o.strip()]
+    if _env_cors else ["*"]
+)
 
 
 def _safe_team(name: str) -> str:
