@@ -9,19 +9,19 @@
 
 用法:
     # 1) 默认安全提示词 + 本地服务
-    python test_real.py
+    python test_attack.py
 
     # 2) 指向部署服务器 + 自己的提示词（一条）
-    python test_real.py --base-url http://<服务器IP>:8000 --prompt "你的完整提示词"
+    python test_attack.py --base-url http://<服务器IP>:8000 --prompt "你的完整提示词"
 
     # 3) 从文件读多条提示词（每行一条，# 开头注释）
-    python test_real.py --prompt-file my_prompts.txt --base-url http://<IP>:8000
+    python test_attack.py --prompt-file my_prompts.txt --base-url http://<IP>:8000
 
     # 4) 交互模式：逐条输入、逐条测（空行结束）
-    python test_real.py --interactive --base-url http://<IP>:8000
+    python test_attack.py --interactive --base-url http://<IP>:8000
 
     # 5) 只测模盾防护 + 开 RAG + medium 敏感度
-    python test_real.py --only with_shield --sensitivity medium --enable-rag
+    python test_attack.py --only with_shield --sensitivity medium --enable-rag
 """
 import argparse
 import json
