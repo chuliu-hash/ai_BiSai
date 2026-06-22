@@ -1,0 +1,16 @@
+# 统一文本文件换行符：仓库内统一 LF，本机按需转换（Windows 仍 CRLF 检出）
+* text=auto eol=lf
+
+# 明确二进制（不转换）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.7z binary
+*.gz binary
+*.pt binary
+*.bin binary
