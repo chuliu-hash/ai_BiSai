@@ -7,6 +7,7 @@ from _bootstrap import _HERE  # noqa: F401
 
 import asyncio
 import importlib
+import io
 import json
 import os
 import re
@@ -63,6 +64,10 @@ _DEFEND_ROOT = Path(defend_group.__file__).parent
 # 允许的队伍名：合法 Python 标识符 + 非保留名
 _TEAM_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RESERVED_TEAMS = {"__init__", "__pycache__"}
+
+# 防御包上传的 zip bomb 防护上限
+_MAX_ZIP_FILES = int(os.environ.get("MAX_ZIP_FILES", "500"))
+_MAX_ZIP_TOTAL_SIZE = int(os.environ.get("MAX_ZIP_TOTAL_SIZE", str(200 * 1024 * 1024)))  # 200MB
 
 # 允许的前端来源（CORS）。
 # 默认放开为 ["*"]：适配本地 localhost / 远程内部平台（如 quchiai）等多种域名。
@@ -281,18 +286,24 @@ async def upload_defense(
     raw = await file.read()
 
     # 必须是 zip
-    import io
     try:
         zf = zipfile.ZipFile(io.BytesIO(raw))
     except zipfile.BadZipFile:
         raise HTTPException(status_code=400, detail="文件不是合法的 ZIP 压缩包")
 
-    # 安全校验：禁止 zip slip（条目路径不能逃出目标目录）+ 禁止绝对路径
+    # 安全校验：禁止 zip slip + 禁止绝对路径 + zip bomb 防护
     target_dir = _DEFEND_ROOT / team
     members = []
+    total_uncompressed = 0
     for info in zf.infolist():
         if info.is_dir():
             continue
+        # zip bomb 防护：文件数与解压总大小上限
+        if len(members) >= _MAX_ZIP_FILES:
+            raise HTTPException(status_code=400, detail=f"压缩包文件数超过上限 {_MAX_ZIP_FILES}")
+        total_uncompressed += info.file_size
+        if total_uncompressed > _MAX_ZIP_TOTAL_SIZE:
+            raise HTTPException(status_code=400, detail=f"压缩包解压后总大小超过上限 {_MAX_ZIP_TOTAL_SIZE // (1024*1024)} MB")
         name = info.filename.replace("\\", "/")
         if name.startswith("/") or ".." in name.split("/"):
             raise HTTPException(status_code=400, detail=f"压缩包含不安全路径: {info.filename}")

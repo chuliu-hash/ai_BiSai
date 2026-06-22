@@ -75,6 +75,10 @@ export default function AttackView() {
     setPage(1);
 
     // 把所有 idx 推入队列，按 CONCURRENCY 个一批并发
+    // 捕获本次测试的 endpoint/sensitivity/enableRag，避免测试中途切换配置导致不一致
+    const runEndpoint = endpoint;
+    const runSensitivity = sensitivity;
+    const runEnableRag = enableRag;
     const queue = prompts.map((p, i) => ({ idx: i + 1, prompt: p }));
     const out = new Array(queue.length);
 
@@ -82,11 +86,11 @@ export default function AttackView() {
       while (queue.length && !cancelRef.current) {
         const item = queue.shift();
         const start = performance.now();
-        let entry = { ...item, ok: false, data: null, error: '', elapsed: 0 };
+        let entry = { ...item, endpoint: runEndpoint, ok: false, data: null, error: '', elapsed: 0 };
         try {
-          const data = item.endpoint === 'no_defense'
+          const data = runEndpoint === 'no_defense'
             ? await attackNoDefense(item.prompt)
-            : await attackWithShield(item.prompt, { sensitivity, enableRag: enableRag });
+            : await attackWithShield(item.prompt, { sensitivity: runSensitivity, enableRag: runEnableRag });
           entry = { ...entry, ok: true, data, elapsed: performance.now() - start };
         } catch (e) {
           entry = { ...entry, error: e.message || '请求失败', elapsed: performance.now() - start };
@@ -100,9 +104,6 @@ export default function AttackView() {
         });
       }
     }
-
-    // 给每个 item 标记 endpoint（便于 worker 内引用）
-    queue.forEach((q) => (q.endpoint = endpoint));
 
     const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker);
     await Promise.all(workers);
@@ -304,7 +305,7 @@ export default function AttackView() {
                       </td>
                       <td className="cellResp">
                         {r.error ? <span className="cellErr">{r.error}</span>
-                          : renderResp(r.data, endpoint)}
+                          : renderResp(r.data, r.endpoint)}
                       </td>
                       <td>{r.elapsed ? `${(r.elapsed / 1000).toFixed(2)}s` : '-'}</td>
                     </tr>
@@ -367,9 +368,4 @@ function Stat({ label, value, tone }) {
 function trunc(s, n) {
   s = String(s || '');
   return s.length > n ? s.slice(0, n) + '…' : s;
-}
-
-function formatSize(size) {
-  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(2)} MB`;
-  return `${Math.max(1, Math.round(size / 1024))} KB`;
 }
