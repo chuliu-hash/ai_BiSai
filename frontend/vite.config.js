@@ -23,19 +23,37 @@ function resolveBase(mode) {
 // 本中间件在 Vite 处理前剥离前缀，让 Vite 按 /src/main.jsx 正常响应。
 // 剥离前缀由 PROXY_PREFIX 指定（默认从 BASE_URL 推导），与 base 解耦——
 // 即使 base=/ 也能剥离，适配「平台自动重写绝对路径」的场景。
+//
+// 同时支持「前缀出现任意位置」的剥离（有些平台把前缀放在中间或重复），
+// 以及打印调试日志（DEBUG_PROXY=1 时），方便定位平台转发行为。
 function stripBasePrefixPlugin(base, explicitPrefix) {
   let prefix = (explicitPrefix || base || '/').trim();
   if (prefix.endsWith('/')) prefix = prefix.slice(0, -1); // '/proxy/5173'
+  const debug = process.env.DEBUG_PROXY;
   return {
     name: 'strip-base-prefix',
     configureServer(server) {
       if (!prefix || prefix === '/') return;
       server.middlewares.use((req, res, next) => {
-        const url = req.url || '';
-        if (url.startsWith(prefix + '/')) {
-          req.url = url.slice(prefix.length) || '/';
-        } else if (url === prefix) {
-          req.url = '/';
+        const orig = req.url || '';
+        // 剥离去掉 query 部分
+        const qIdx = orig.indexOf('?');
+        const path = qIdx >= 0 ? orig.slice(0, qIdx) : orig;
+        const query = qIdx >= 0 ? orig.slice(qIdx) : '';
+        let newPath = path;
+        if (path.startsWith(prefix + '/')) {
+          newPath = path.slice(prefix.length) || '/';
+        } else if (path === prefix) {
+          newPath = '/';
+        } else if (path.startsWith(prefix + prefix + '/')) {
+          // 平台二次重写导致前缀翻倍的极端情况
+          newPath = path.slice(prefix.length) || '/';
+        }
+        if (newPath !== path) {
+          req.url = newPath + query;
+          if (debug) console.log(`[strip-prefix] ${orig}  →  ${req.url}`);
+        } else if (debug) {
+          console.log(`[strip-prefix] (no match) ${orig}`);
         }
         next();
       });
