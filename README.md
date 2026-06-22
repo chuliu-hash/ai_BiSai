@@ -56,12 +56,9 @@ npm run dev
 
 | 文档 | 内容 |
 |------|------|
-| [`frontend/使用.txt`](frontend/使用.txt) | 启动 + 使用流程 + 攻击 JSON 格式速查（最简上手） |
-| [`frontend/PRODUCT.md`](frontend/PRODUCT.md) | 前端产品定位与设计原则 |
 | [`backend/server_API.md`](backend/server_API.md) | **后端 API 完整说明**（所有端点、字段、错误码、调用示例） |
-| [`backend/Readme.md`](backend/Readme.md) | 考题及规则总结 |
+| [`backend/summary.md`](backend/summary.md) | 考题及规则总结（四大风险类型、评分机制） |
 | [`backend/defend_group/README.md`](backend/defend_group/README.md) | 防御队伍提交规范（Detect 接口 + 目录结构） |
-| [`test_assets/README.md`](test_assets/README.md) | 测试语料 + 防御示例包 + 自动化脚本说明 |
 
 ---
 
@@ -109,9 +106,8 @@ npm run dev
 | `test_assets/attack_bulk.json` | 120 条大样本（验证全量 + 分批） |
 | `test_assets/rule_guard.zip` | 防御示例 1：关键词 + 正则 + Base64 解码 |
 | `test_assets/heuristic_shield.zip` | 防御示例 2：指令密度 + 角色重置 + 模板 token |
-| `test_assets/e2e_test.py` | Playwright 端到端浏览器测试 |
 
-详见 [`test_assets/README.md`](test_assets/README.md)。
+这些样本可直接在前端上传测试，或用 [`backend/test_attack.py`](backend/test_attack.py) / [`backend/test_defend.py`](backend/test_defend.py) 跑命令行集成测试。
 
 ---
 
