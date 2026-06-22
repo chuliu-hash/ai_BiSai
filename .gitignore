@@ -27,6 +27,7 @@ ENV/
 .env
 *.env.local
 backend/.env
+frontend/.env
 
 # ───────── 运行时生成的数据/模型缓存（首次运行自动下载或生成）─────────
 backend/data/adv_corpus.pt
