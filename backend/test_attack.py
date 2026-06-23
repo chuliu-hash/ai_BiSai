@@ -124,13 +124,28 @@ def call(base_url, path, payload, timeout):
     return r.status_code, data, elapsed
 
 
-HEAD = 50  # 三字段打印/展示时的截断长度（字符）
+HEAD = 50  # 文本字段打印/保存时的截断长度（字符）
 
 
 def head(s):
-    """截断到 HEAD 个字符，超出加省略号。完整内容仍保存在结果 JSON 中。"""
+    """截断到 HEAD 个字符，超出加省略号。"""
     s = s or ""
     return s[:HEAD] + ("..." if len(s) > HEAD else "")
+
+
+def slim(obj):
+    """递归把响应里所有字符串截断到 HEAD 字符；dict/list 结构与数值保留原样。
+
+    用于保存结果 JSON 时压缩冗长文本（user_prompt/context/judge_rule/
+    model_response/error/detection_error 等），保持结构精简易读。
+    """
+    if isinstance(obj, str):
+        return head(obj)
+    if isinstance(obj, dict):
+        return {k: slim(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [slim(v) for v in obj]
+    return obj  # 数值 / bool / None 原样
 
 
 def show(title, sample, http, elapsed, line):
@@ -213,14 +228,14 @@ def run_one(base_url, sample, sensitivity, enable_rag, only, timeout):
         code, data, t = call(base_url, "/api/attack/no_defense", payload, timeout)
         check_no_defense(code, data, sample)
         show("无防护", sample, code, t, _summary_no_defense(data))
-        rec["no_defense"] = data
+        rec["no_defense"] = slim(data)
 
     if only in ("with_shield", "both"):
         full = dict(payload, sensitivity=sensitivity, enable_rag=enable_rag)
         code, data, t = call(base_url, "/api/attack/with_shield", full, timeout)
         check_with_shield(code, data, sample)
         show("模盾防护", sample, code, t, _summary_with_shield(data))
-        rec["with_shield"] = data
+        rec["with_shield"] = slim(data)
         rec["detected"] = _is_attack_with_shield(data)
     return rec
 
