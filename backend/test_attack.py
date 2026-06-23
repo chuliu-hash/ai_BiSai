@@ -18,6 +18,9 @@
     # 4) 截断只测前 N 条（可选）
     python test_attack.py --file test_samples.json --limit 10
 
+    # 5) 把检测结果写入 JSON（便于留存/对比；不传则只打印）
+    python test_attack.py --file test_samples.json --out results.json
+
 JSON 样本格式（与前端上传格式一致，由服务端 _extract_samples 解析）：
     [
       {"user_prompt": "...", "context": "...", "judge_rule": "..."},
@@ -107,9 +110,18 @@ def load_samples(path):
 
 
 def call(base_url, path, payload, timeout):
+    """POST 并解析 JSON。返回 (code, data, elapsed)。
+
+    响应非 JSON 时 data 落到 {"_raw": 文本}，避免后续处理崩溃。
+    """
     start = time.time()
     r = requests.post(f"{base_url}{path}", json=payload, timeout=timeout)
-    return r.status_code, r.json(), time.time() - start
+    elapsed = time.time() - start
+    try:
+        data = r.json()
+    except ValueError:
+        data = {"_raw": r.text}
+    return r.status_code, data, elapsed
 
 
 def show(title, code, data, elapsed, sample):
@@ -140,16 +152,34 @@ def check_with_shield(code, data, sample):
 
 
 def run_one(base_url, sample, sensitivity, enable_rag, only, timeout):
+    """对一条样本跑选定端点，返回结构化结果记录（用于汇总写入 JSON）。"""
     payload = {
         "user_prompt": sample["user_prompt"],
         "context": sample["context"],
         "judge_rule": sample["judge_rule"],
     }
+    # 截断用于可读性（完整内容回显在响应 data 里）
+    up = sample["user_prompt"]
+    rec = {
+        "sample_id": sample.get("sample_id"),
+        "category": sample.get("category"),
+        "user_prompt": up,
+        "user_prompt_head": up[:200] + ("..." if len(up) > 200 else ""),
+        "context": sample["context"],
+        "judge_rule": sample["judge_rule"],
+        "endpoints": {},
+    }
+
     if only in ("no_defense", "both"):
         code, data, t = call(base_url, "/api/attack/no_defense", payload, timeout)
         check_no_defense(code, data, sample)
         show("无防护  POST /api/attack/no_defense", code, data, t, sample)
         print(f"  >> 模型回复: {(data.get('model_response') or '')[:200]}")
+        rec["endpoints"]["no_defense"] = {
+            "http": code,
+            "elapsed": round(t, 3),
+            "response": data,
+        }
 
     if only in ("with_shield", "both"):
         full = dict(payload, sensitivity=sensitivity, enable_rag=enable_rag)
@@ -165,6 +195,13 @@ def run_one(base_url, sample, sensitivity, enable_rag, only, timeout):
         if outd:
             print(f"  >> 输出检测: is_safe={outd.get('is_safe')} failed_rules={outd.get('failed_rules')}")
         print(f"  >> 模型回复: {(data.get('model_response') or '')[:200]}")
+        rec["endpoints"]["with_shield"] = {
+            "http": code,
+            "elapsed": round(t, 3),
+            "request": {"sensitivity": sensitivity, "enable_rag": enable_rag},
+            "response": data,
+        }
+    return rec
 
 
 def main():
@@ -177,6 +214,8 @@ def main():
     ap.add_argument("--enable-rag", action="store_true")
     ap.add_argument("--only", choices=["no_defense", "with_shield", "both"], default="both")
     ap.add_argument("--timeout", type=float, default=120.0)
+    ap.add_argument("--out", default=None,
+                    help="把检测结果写入该 JSON 文件（含输入与两端点响应）；不传则只打印")
     args = ap.parse_args()
 
     # 加载 .env，并确保目标地址绕过代理
@@ -209,14 +248,43 @@ def main():
 
     print(f"\n共 {len(samples)} 条样本 | 模式={args.only} | sensitivity={args.sensitivity} | enable_rag={args.enable_rag}")
 
+    results = []
     for i, s in enumerate(samples, 1):
         print(f"\n{'#' * 60}\n# 样本 {i}/{len(samples)}\n{'#' * 60}")
+        rec = {
+            "sample_id": s.get("sample_id"),
+            "category": s.get("category"),
+            "user_prompt": s["user_prompt"],
+            "context": s["context"],
+            "judge_rule": s["judge_rule"],
+            "endpoints": {},
+            "error": None,
+        }
         try:
-            run_one(args.base_url, s, args.sensitivity, args.enable_rag, args.only, args.timeout)
+            rec = run_one(args.base_url, s, args.sensitivity, args.enable_rag, args.only, args.timeout)
         except AssertionError as e:
             print(f"  [结构校验 FAIL] {e}")
+            rec["error"] = f"结构校验失败: {e}"
         except requests.exceptions.RequestException as e:
             print(f"  [请求失败] {e}")
+            rec["error"] = f"请求失败: {e}"
+        results.append(rec)
+
+    # 写入结果 JSON
+    if args.out:
+        out = {
+            "base_url": args.base_url,
+            "source_file": os.path.abspath(args.file),
+            "mode": args.only,
+            "sensitivity": args.sensitivity,
+            "enable_rag": args.enable_rag,
+            "total": len(results),
+            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "results": results,
+        }
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False, indent=2)
+        print(f"\n结果已写入: {os.path.abspath(args.out)}（共 {len(results)} 条）")
 
 
 if __name__ == "__main__":
