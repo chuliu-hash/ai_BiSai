@@ -1,0 +1,21 @@
+# 攻防评测统一服务后端依赖
+# 安装：pip install -r requirements.txt
+# 说明：torch / transformers 用考题要求的版本下限；其余按实测可用版本设下限。
+
+# ── Web 服务 ──
+fastapi>=0.110               # Web 框架（路由 / 中间件 / UploadFile）
+uvicorn>=0.29                # ASGI 服务器（server.py 入口）
+python-multipart>=0.0.7      # FastAPI 文件上传隐式依赖（UploadFile/Form）
+pydantic>=2.0                # 请求模型校验
+
+# ── LLM / HTTP 客户端 ──
+openai>=1.0                  # 调用后端大模型（兼容 OpenAI 接口的服务）
+requests>=2.28               # 输入/输出检测 LLM、Embedding 服务调用
+
+# ── 模盾·输入检测（BERT 集成）──
+torch>=2.6.0                 # 考题要求 2.6.0+（CPU 或 CUDA 版均可）
+transformers>=4.51.3         # 考题要求 4.51.3+
+numpy>=1.24                  # BERT 集成置信度投票用
+
+# ── 模盾·RAG（仅 enable_rag=true 时需要）──
+sentence-transformers>=2.2   # 安全上下文检索 embedding

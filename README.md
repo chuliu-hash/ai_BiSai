@@ -13,14 +13,21 @@ ai_bachang/
 
 ## 一、快速开始
 
-### 1. 启动后端（必须用 modelshield 环境）
+### 1. 启动后端
 
 ```bash
 cd backend
-conda activate modelshield       # 含 fastapi / torch / transformers
+# 方式 A：用预配置好的 modelshield 环境（推荐，已含全部依赖）
+conda activate modelshield
+
+# 方式 B：自建环境
+pip install -r requirements.txt
+
 python server.py
 # → http://127.0.0.1:8000
 ```
+
+依赖清单见 [`backend/requirements.txt`](backend/requirements.txt)。
 
 后端依赖外部 LLM 服务，地址在 `backend/.env` 配置：
 - `LLM_SERVER_URL` — 被攻击的目标模型（Qwen3）
