@@ -124,13 +124,22 @@ def call(base_url, path, payload, timeout):
     return r.status_code, data, elapsed
 
 
-def show(title, code, data, elapsed, sample):
-    print(f"\n{'=' * 70}")
-    print(f"{title}  |  HTTP {code}  |  {elapsed:.2f}s")
-    print("=" * 70)
-    up = sample["user_prompt"]
-    print(f"  user_prompt: {up[:100]}{'...' if len(up) > 100 else ''}")
-    print(json.dumps(data, ensure_ascii=False, indent=2))
+HEAD = 20  # 三字段打印/保存时的截断长度（字符）
+
+
+def head(s):
+    """截断到 HEAD 个字符，超出加省略号。"""
+    s = s or ""
+    return s[:HEAD] + ("..." if len(s) > HEAD else "")
+
+
+def show(title, sample, http, elapsed, line):
+    """打印一行精简结果：标题 + 三字段各取前20字 + 摘要行。"""
+    print(f"{title}  [{http}] {elapsed:.2f}s")
+    print(f"  user_prompt: {head(sample['user_prompt'])}")
+    print(f"  context:     {head(sample['context'])}")
+    print(f"  judge_rule:  {head(sample['judge_rule'])}")
+    print(f"  >> {line}")
 
 
 def check_no_defense(code, data, sample):
@@ -151,56 +160,55 @@ def check_with_shield(code, data, sample):
     print("  [结构校验 PASS] with_shield 响应结构正确")
 
 
+def _line_no_defense(data):
+    resp = (data.get("model_response") or "").replace("\n", " ")
+    err = data.get("error")
+    return f"reply={resp[:HEAD]}{'...' if len(resp) > HEAD else ''}" + (f"  error={err}" if err else "")
+
+
+def _line_with_shield(data):
+    sh = data.get("shield") or {}
+    resp = (data.get("model_response") or "").replace("\n", " ")
+    err = data.get("error")
+    parts = [
+        f"is_safe={sh.get('is_safe')}",
+        f"stopped_at={sh.get('stopped_at') or '完成'}",
+        f"reply={resp[:HEAD]}{'...' if len(resp) > HEAD else ''}",
+    ]
+    if err:
+        parts.append(f"error={err}")
+    return "  ".join(parts)
+
+
 def run_one(base_url, sample, sensitivity, enable_rag, only, timeout):
-    """对一条样本跑选定端点，返回结构化结果记录（用于汇总写入 JSON）。"""
+    """对一条样本跑选定端点，返回精简记录：三字段(各前20字) + 各端点摘要行。"""
     payload = {
         "user_prompt": sample["user_prompt"],
         "context": sample["context"],
         "judge_rule": sample["judge_rule"],
     }
-    # 截断用于可读性（完整内容回显在响应 data 里）
-    up = sample["user_prompt"]
     rec = {
-        "sample_id": sample.get("sample_id"),
-        "category": sample.get("category"),
-        "user_prompt": up,
-        "user_prompt_head": up[:200] + ("..." if len(up) > 200 else ""),
-        "context": sample["context"],
-        "judge_rule": sample["judge_rule"],
-        "endpoints": {},
+        "user_prompt": head(sample["user_prompt"]),
+        "context": head(sample["context"]),
+        "judge_rule": head(sample["judge_rule"]),
+        "no_defense": None,
+        "with_shield": None,
     }
 
     if only in ("no_defense", "both"):
         code, data, t = call(base_url, "/api/attack/no_defense", payload, timeout)
         check_no_defense(code, data, sample)
-        show("无防护  POST /api/attack/no_defense", code, data, t, sample)
-        print(f"  >> 模型回复: {(data.get('model_response') or '')[:200]}")
-        rec["endpoints"]["no_defense"] = {
-            "http": code,
-            "elapsed": round(t, 3),
-            "response": data,
-        }
+        line = _line_no_defense(data)
+        show("无防护", sample, code, t, line)
+        rec["no_defense"] = line
 
     if only in ("with_shield", "both"):
         full = dict(payload, sensitivity=sensitivity, enable_rag=enable_rag)
         code, data, t = call(base_url, "/api/attack/with_shield", full, timeout)
         check_with_shield(code, data, sample)
-        show("模盾防护  POST /api/attack/with_shield", code, data, t, sample)
-        sh = data["shield"]
-        ind = sh.get("input_detection") or {}
-        outd = sh.get("output_detection") or {}
-        print(f"  >> 输入检测: is_safe={ind.get('is_safe')} risk={ind.get('risk_level')} "
-              f"category={ind.get('category')} by={ind.get('decision_by')}")
-        print(f"  >> 终止于: {sh.get('stopped_at') or '全流程完成（未拦截）'}")
-        if outd:
-            print(f"  >> 输出检测: is_safe={outd.get('is_safe')} failed_rules={outd.get('failed_rules')}")
-        print(f"  >> 模型回复: {(data.get('model_response') or '')[:200]}")
-        rec["endpoints"]["with_shield"] = {
-            "http": code,
-            "elapsed": round(t, 3),
-            "request": {"sensitivity": sensitivity, "enable_rag": enable_rag},
-            "response": data,
-        }
+        line = _line_with_shield(data)
+        show("模盾防护", sample, code, t, line)
+        rec["with_shield"] = line
     return rec
 
 
@@ -215,7 +223,7 @@ def main():
     ap.add_argument("--only", choices=["no_defense", "with_shield", "both"], default="both")
     ap.add_argument("--timeout", type=float, default=120.0)
     ap.add_argument("--out", default=None,
-                    help="把检测结果写入该 JSON 文件（含输入与两端点响应）；不传则只打印")
+                    help="把精简检测结果写入该 JSON（三字段前20字 + 端点摘要行）；不传则只打印")
     args = ap.parse_args()
 
     # 加载 .env，并确保目标地址绕过代理
@@ -250,40 +258,28 @@ def main():
 
     results = []
     for i, s in enumerate(samples, 1):
-        print(f"\n{'#' * 60}\n# 样本 {i}/{len(samples)}\n{'#' * 60}")
+        print(f"\n# 样本 {i}/{len(samples)}")
         rec = {
-            "sample_id": s.get("sample_id"),
-            "category": s.get("category"),
-            "user_prompt": s["user_prompt"],
-            "context": s["context"],
-            "judge_rule": s["judge_rule"],
-            "endpoints": {},
-            "error": None,
+            "user_prompt": head(s["user_prompt"]),
+            "context": head(s["context"]),
+            "judge_rule": head(s["judge_rule"]),
+            "no_defense": None,
+            "with_shield": None,
         }
         try:
             rec = run_one(args.base_url, s, args.sensitivity, args.enable_rag, args.only, args.timeout)
         except AssertionError as e:
-            print(f"  [结构校验 FAIL] {e}")
-            rec["error"] = f"结构校验失败: {e}"
+            print(f"  [FAIL] {e}")
+            rec["error"] = str(e)
         except requests.exceptions.RequestException as e:
             print(f"  [请求失败] {e}")
-            rec["error"] = f"请求失败: {e}"
+            rec["error"] = str(e)
         results.append(rec)
 
     # 写入结果 JSON
     if args.out:
-        out = {
-            "base_url": args.base_url,
-            "source_file": os.path.abspath(args.file),
-            "mode": args.only,
-            "sensitivity": args.sensitivity,
-            "enable_rag": args.enable_rag,
-            "total": len(results),
-            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "results": results,
-        }
         with open(args.out, "w", encoding="utf-8") as f:
-            json.dump(out, f, ensure_ascii=False, indent=2)
+            json.dump(results, f, ensure_ascii=False, indent=2)
         print(f"\n结果已写入: {os.path.abspath(args.out)}（共 {len(results)} 条）")
 
 
