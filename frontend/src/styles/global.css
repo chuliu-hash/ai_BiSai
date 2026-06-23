@@ -265,6 +265,8 @@ textarea.textInput { min-height: 96px; padding: 10px 12px; resize: vertical; lin
 .cyberSelect {
   appearance: none;
   -webkit-appearance: none;
+  color: var(--text);
+  background-color: #0f172a;
   background-image:
     linear-gradient(45deg, transparent 50%, #c7d2fe 50%),
     linear-gradient(135deg, #c7d2fe 50%, transparent 50%),
@@ -273,6 +275,19 @@ textarea.textInput { min-height: 96px; padding: 10px 12px; resize: vertical; lin
   background-size: 6px 6px, 6px 6px, 100% 100%;
   background-repeat: no-repeat;
   padding-right: 40px;
+}
+
+/* option 元素：多数浏览器由系统渲染，需单独设深色背景 + 浅色文字，
+   否则展开后是白底灰字看不清。选中项/悬停项单独着色。 */
+.cyberSelect option {
+  background: #0f172a;
+  color: #e5f2ff;
+}
+
+.cyberSelect option:checked,
+.cyberSelect option:hover {
+  background: #1e3a8a;
+  color: #ffffff;
 }
 
 .toggleRow {
