@@ -126,6 +126,10 @@ export default function DefenseView() {
         let entry = { ...item, ok: false, verdict: null, error: '', elapsed: 0 };
         try {
           const verdict = await detect(runTeam, item.prompt);
+          // Detect 接口约定返回 0/1；非 0/1（null/空/异常值）视作检测异常，标记为出错而非「不安全」
+          if (verdict !== 0 && verdict !== 1) {
+            throw new Error(`检测返回非法值: ${JSON.stringify(verdict)}`);
+          }
           entry = { ...entry, ok: true, verdict, elapsed: performance.now() - start };
         } catch (e) {
           entry = { ...entry, error: e.message || '检测失败', elapsed: performance.now() - start };
