@@ -26,11 +26,19 @@ export default function App() {
     return () => clearInterval(id);
   }, [checkConn]);
 
+  // 两个页面始终挂载，仅通过 CSS 隐藏未激活页：
+  // 这样切换赛道时，正在进行的批量检测（worker）、已产出的结果、上传的文件、
+  // 结果分页等内部状态都会保留，不会被卸载清空。
   return (
     <div className="app-shell">
       <Sidebar active={tab} onSwitch={setTab} conn={conn} />
       <main className="main">
-        {tab === 'attack' ? <AttackView /> : <DefenseView />}
+        <div className={tab === 'attack' ? 'pagePane active' : 'pagePane'}>
+          <AttackView />
+        </div>
+        <div className={tab === 'defense' ? 'pagePane active' : 'pagePane'}>
+          <DefenseView />
+        </div>
       </main>
     </div>
   );

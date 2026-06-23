@@ -158,6 +158,10 @@ img { display: block; max-width: 100%; }
   overflow: auto;
 }
 
+/* 两页面常驻挂载、靠隐藏切换：保留各自的检测进度与结果状态 */
+.pagePane { display: none; }
+.pagePane.active { display: block; }
+
 /* ───────── 顶栏 ───────── */
 
 .topbar {
