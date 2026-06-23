@@ -9,7 +9,7 @@ python-multipart>=0.0.7      # FastAPI 文件上传隐式依赖（UploadFile/For
 pydantic>=2.0                # 请求模型校验
 
 # ── LLM / HTTP 客户端 ──
-openai>=1.0                  # 调用后端大模型（兼容 OpenAI 接口的服务）
+openai>=1.54                 # 调用后端大模型（1.54+ 修复了与 httpx>=0.28 的 proxies 兼容）
 requests>=2.28               # 输入/输出检测 LLM、Embedding 服务调用
 
 # ── 模盾·输入检测（BERT 集成）──

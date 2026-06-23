@@ -1,5 +1,6 @@
 import json
 import os
+import httpx
 from openai import OpenAI
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -64,7 +65,12 @@ Prediction:
         self.base_url = os.environ.get("OUTPUT_DETECTOR_API_URL", base_url)
         self.model_name = os.environ.get("OUTPUT_DETECTOR_MODEL", model_name)
         
-        self.client = OpenAI(api_key=api_key, base_url=self.base_url)
+        # trust_env=False: 忽略系统 HTTP_PROXY/HTTPS_PROXY 环境变量，
+        # 避免旧版 openai(httpx<0.28) 读代理后调 httpx.Client(proxies=...) 报错
+        self.client = OpenAI(
+            api_key=api_key, base_url=self.base_url,
+            http_client=httpx.Client(trust_env=False),
+        )
         self.rules = self._load_rules(constitution_file)
 
     def _load_rules(self, file_path: str) -> List[Dict]:

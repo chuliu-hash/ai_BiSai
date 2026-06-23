@@ -3,6 +3,7 @@
 from _bootstrap import _HERE  # noqa: F401
 from typing import Dict
 
+import httpx
 from openai import OpenAI
 
 from defend.prompt_detection import Detector
@@ -16,7 +17,12 @@ from config import (
 
 def call_llm(prompt: str, base_url: str, model: str, temperature: float = 0.7) -> str:
     """调用后端大模型（带超时）。"""
-    client = OpenAI(api_key="not-needed", base_url=base_url, timeout=LLM_TIMEOUT)
+    # trust_env=False: 忽略系统代理环境变量，避免旧版 openai(httpx<0.28)
+    # 读代理后调 httpx.Client(proxies=...) 与新版 httpx 不兼容而报错
+    client = OpenAI(
+        api_key="not-needed", base_url=base_url, timeout=LLM_TIMEOUT,
+        http_client=httpx.Client(trust_env=False),
+    )
     resp = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
