@@ -43,7 +43,7 @@ export async function listGroups() {
   return body.groups || [];
 }
 
-// 攻击：上传 JSON → 返回解析出的 prompts 列表
+// 攻击：上传 JSON → 返回解析出的样本列表（每项含 user_prompt/context/judge_rule）
 // limit: 0 = 不截断拿全量（交由前端分批）；>0 = 截断到前 N 条
 export async function uploadAttack(file, limit = 0) {
   const fd = new FormData();
@@ -54,21 +54,23 @@ export async function uploadAttack(file, limit = 0) {
   return handle(res);
 }
 
-// 攻击：单条测试
-export async function attackNoDefense(prompt) {
+// 攻击：单条测试。sample = {user_prompt, context, judge_rule}
+export async function attackNoDefense(sample) {
+  const { user_prompt, context = '', judge_rule = '' } = sample;
   const res = await fetch(`${getBase()}/api/attack/no_defense`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ user_prompt, context, judge_rule }),
   });
   return handle(res);
 }
 
-export async function attackWithShield(prompt, { sensitivity = 'low', enableRag = false } = {}) {
+export async function attackWithShield(sample, { sensitivity = 'low', enableRag = false } = {}) {
+  const { user_prompt, context = '', judge_rule = '' } = sample;
   const res = await fetch(`${getBase()}/api/attack/with_shield`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, sensitivity, enable_rag: enableRag }),
+    body: JSON.stringify({ user_prompt, context, judge_rule, sensitivity, enable_rag: enableRag }),
   });
   return handle(res);
 }

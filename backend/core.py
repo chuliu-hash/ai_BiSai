@@ -15,17 +15,30 @@ from config import (
 )
 
 
-def call_llm(prompt: str, base_url: str, model: str, temperature: float = 0.7) -> str:
-    """调用后端大模型（带超时）。"""
+def call_llm(user_prompt: str, base_url: str, model: str,
+             context: str = "", judge_rule: str = "", temperature: float = 0.7) -> str:
+    """调用后端大模型（带超时）。
+
+    三字段按角色组装 messages：
+      · judge_rule → {role:system}（评审规则/系统提示词）
+      · context    → 前置 {role:user}（历史上下文；为空则不插入）
+      · user_prompt→ {role:user}（攻击 user prompt）
+    """
     # trust_env=False: 忽略系统代理环境变量，避免旧版 openai(httpx<0.28)
     # 读代理后调 httpx.Client(proxies=...) 与新版 httpx 不兼容而报错
     client = OpenAI(
         api_key="not-needed", base_url=base_url, timeout=LLM_TIMEOUT,
         http_client=httpx.Client(trust_env=False),
     )
+    messages = []
+    if judge_rule:
+        messages.append({"role": "system", "content": judge_rule})
+    if context:
+        messages.append({"role": "user", "content": context})
+    messages.append({"role": "user", "content": user_prompt})
     resp = client.chat.completions.create(
         model=model,
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages,
         temperature=temperature,
     )
     return resp.choices[0].message.content or ""
@@ -66,23 +79,36 @@ def _run_rag_prompt(scr: SCR_RAG_System, text: str, top_k: int = 2):
 
 # ───────────────────────── 单条提示词处理（同步，在线程池跑）─────────────────────────
 
-def _process_no_defense(prompt: str, base_url: str, model: str) -> Dict:
-    record = {"prompt": prompt, "model_response": None, "error": None}
+def _process_no_defense(sample: Dict, base_url: str, model: str) -> Dict:
+    """无防护：直接用 sample 的 user_prompt(+context/judge_rule) 调裸 LLM。"""
+    user_prompt = sample["user_prompt"]
+    context = sample.get("context", "")
+    judge_rule = sample.get("judge_rule", "")
+    record = {
+        "user_prompt": user_prompt, "context": context, "judge_rule": judge_rule,
+        "model_response": None, "error": None,
+    }
     try:
-        record["model_response"] = call_llm(prompt, base_url, model)
+        record["model_response"] = call_llm(user_prompt, base_url, model, context, judge_rule)
     except Exception as e:
         record["error"] = f"LLM 调用失败: {e}"
     return record
 
 
-def _process_with_shield(prompt: str, sensitivity: str, enable_rag: bool,
+def _process_with_shield(sample: Dict, sensitivity: str, enable_rag: bool,
                          base_url: str, model: str) -> Dict:
-    record = {"prompt": prompt, "model_response": None, "shield": None, "error": None}
+    user_prompt = sample["user_prompt"]
+    context = sample.get("context", "")
+    judge_rule = sample.get("judge_rule", "")
+    record = {
+        "user_prompt": user_prompt, "context": context, "judge_rule": judge_rule,
+        "model_response": None, "shield": None, "error": None,
+    }
 
-    # ── 模盾层1：输入检测（占用全局槽位，限流 BERT 推理）──
+    # ── 模盾层1：输入检测（仅检 user_prompt；占用全局槽位，限流 BERT 推理）──
     try:
         with _detect_slot():
-            input_detection = _run_input_detection(_get_detector(sensitivity), prompt)
+            input_detection = _run_input_detection(_get_detector(sensitivity), user_prompt)
     except TimeoutError as e:
         record["error"] = str(e)
         return record
@@ -114,18 +140,18 @@ def _process_with_shield(prompt: str, sensitivity: str, enable_rag: bool,
         return record
 
     # ── 模盾层2：RAG 安全上下文增强（可选，详见 server_API.md「RAG 可选开关」；纯 IO 不占 BERT 额度）──
-    gen_prompt = prompt
+    gen_prompt = user_prompt
     rag_info = None
     if enable_rag:
         try:
-            gen_prompt, n = _run_rag_prompt(_get_scr(), prompt)
+            gen_prompt, n = _run_rag_prompt(_get_scr(), user_prompt)
             rag_info = {"retrieved": n}
         except Exception as e:
             rag_info = {"error": f"RAG 降级为直接生成: {e}"}
 
-    # 调 LLM 生成
+    # 调 LLM 生成（带 context/judge_rule 分角色；RAG 拼接只作用于 user_prompt）
     try:
-        resp = call_llm(gen_prompt, base_url, model)
+        resp = call_llm(gen_prompt, base_url, model, context, judge_rule)
     except Exception as e:
         record["error"] = f"LLM 生成失败: {e}"
         record["shield"] = {
@@ -140,7 +166,7 @@ def _process_with_shield(prompt: str, sensitivity: str, enable_rag: bool,
 
     # ── 模盾层3：输出检测（复用常驻实例；内部 5 规则并发）──
     try:
-        out = _get_output_detector().detect(prompt, resp)
+        out = _get_output_detector().detect(user_prompt, resp)
         output_detection = {
             "is_safe": out.is_safe,
             "failed_rules": out.failed_rules,

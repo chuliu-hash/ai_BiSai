@@ -33,7 +33,9 @@ from core import _process_no_defense, _process_with_shield
 # ───────────────────────── 请求模型 ─────────────────────────
 
 class AttackRequest(BaseModel):
-    prompt: str = Field(..., min_length=1, description="完整的攻击提示词（User Prompt），服务端不再做任何拼接")
+    user_prompt: str = Field(..., min_length=1, description="攻击 user prompt（送 {role:user}）")
+    context: str = Field("", description="历史上下文（送前置 {role:user} 消息，可空）")
+    judge_rule: str = Field("", description="评审规则/系统提示词（送 {role:system}，可空）")
     llm_base_url: Optional[str] = None
     llm_model: Optional[str] = None
 
@@ -92,70 +94,43 @@ def _safe_team(name: str) -> str:
     return name
 
 
-def _extract_prompts(obj) -> list:
-    """从解析后的 JSON 对象抽取 prompt 列表。
+def _extract_samples(obj) -> list:
+    """从解析后的 JSON 抽取攻击样本列表（新格式：每条含三字段）。
 
-    支持三种提交形态：
-      · ["prompt1", "prompt2", ...]                         → 字符串数组
-      · [{"prompt": "...", ...}, ...] / [{..., "攻击语料": "..."}]  → 对象数组
-      · {"队名": [{"prompt": "..."}, ...], ...}              → 按队分组的对象
-    统一返回 list[str]（非字符串元素转 str，空串丢弃）。
+    样本格式：对象数组，每个对象含：
+      · user_prompt : str —— 攻击 user prompt（必填，送 {role:user}）
+      · context     : str —— 历史上下文（可选，默认空串，送前置 {role:user} 消息）
+      · judge_rule  : str —— 评审规则/系统提示词（可选，默认空串，送 {role:system}）
+
+    支持顶层是对象数组，也兼容「按队分组」{队名: [对象,...]} 形态（递归收集）。
+    统一返回 list[dict]，每个 dict 至少含 user_prompt；context/judge_rule 缺省补 ""。
     """
-    prompts = []
+    samples = []
 
     def push(item):
-        if isinstance(item, str):
-            if item.strip():
-                prompts.append(item)
-        elif item is not None:
-            s = str(item).strip()
-            if s:
-                prompts.append(s)
+        if isinstance(item, dict):
+            up = item.get("user_prompt")
+            if isinstance(up, str) and up.strip():
+                ctx = item.get("context")
+                jr = item.get("judge_rule")
+                samples.append({
+                    "user_prompt": up,
+                    "context": ctx if isinstance(ctx, str) else "",
+                    "judge_rule": jr if isinstance(jr, str) else "",
+                })
 
-    if isinstance(obj, str):
-        push(obj)
-    elif isinstance(obj, list):
+    if isinstance(obj, list):
         for row in obj:
-            if isinstance(row, str):
-                push(row)
-            elif isinstance(row, dict):
-                _prompts_from_dict(row, push)
+            push(row)
     elif isinstance(obj, dict):
-        _prompts_from_dict(obj, push)
-    return prompts
-
-
-def _prompts_from_dict(d: dict, push):
-    """从一个 dict 抽取 prompt：优先取 prompt/提示词/攻击语料 等键；否则把每个值递归处理。"""
-    PROMPT_KEYS = ("prompt", "user_prompt", "text", "content",
-                   "提示词", "攻击语料", "攻击提示词", "指令")
-    found = False
-    for k, v in d.items():
-        hit = (isinstance(k, str) and (k.lower() in PROMPT_KEYS or k in PROMPT_KEYS))
-        if hit:
-            found = True
+        # 按队分组：{队名: [对象,...]}；也容忍单个样本对象（含 user_prompt）
+        for v in obj.values():
             if isinstance(v, list):
                 for sub in v:
-                    if isinstance(sub, str):
-                        push(sub)
-                    elif isinstance(sub, dict):
-                        _prompts_from_dict(sub, push)
-            else:
-                push(v)
-    if found:
-        return
-    # 没有命中已知键：把每个值当潜在容器递归（应对按队分组的 {队名: [...]} 形态）
-    for v in d.values():
-        if isinstance(v, list):
-            for sub in v:
-                if isinstance(sub, str):
                     push(sub)
-                elif isinstance(sub, dict):
-                    _prompts_from_dict(sub, push)
-        elif isinstance(v, dict):
-            _prompts_from_dict(v, push)
-        else:
-            push(v)
+            elif isinstance(v, dict):
+                push(v)
+    return samples
 
 
 
@@ -190,22 +165,24 @@ app.add_middleware(
 
 @app.post("/api/attack/no_defense")
 async def attack_no_defense(req: AttackRequest):
-    """无防护模型：完整提示词 → 直接调裸 LLM → 返回生成结果。"""
+    """无防护模型：user_prompt(+context/judge_rule) → 直接调裸 LLM → 返回生成结果。"""
     base_url = req.llm_base_url or DEFAULT_LLM_BASE_URL
     model = req.llm_model or DEFAULT_LLM_MODEL
+    sample = {"user_prompt": req.user_prompt, "context": req.context, "judge_rule": req.judge_rule}
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(_req_pool, _process_no_defense, req.prompt, base_url, model)
+    return await loop.run_in_executor(_req_pool, _process_no_defense, sample, base_url, model)
 
 
 @app.post("/api/attack/with_shield")
 async def attack_with_shield(req: ShieldedAttackRequest):
-    """模盾防护模型：完整提示词 → 输入检测 → (RAG增强)生成 → 输出检测。"""
+    """模盾防护模型：user_prompt → 输入检测 → (RAG增强)生成(+context/judge_rule) → 输出检测。"""
     base_url = req.llm_base_url or DEFAULT_LLM_BASE_URL
     model = req.llm_model or DEFAULT_LLM_MODEL
+    sample = {"user_prompt": req.user_prompt, "context": req.context, "judge_rule": req.judge_rule}
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         _req_pool, _process_with_shield,
-        req.prompt, req.sensitivity, req.enable_rag, base_url, model,
+        sample, req.sensitivity, req.enable_rag, base_url, model,
     )
 
 
@@ -250,26 +227,26 @@ async def upload_attack(file: UploadFile = File(...), limit: Optional[int] = Non
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"JSON 解析失败: {e}")
 
-    prompts = _extract_prompts(obj)
-    if not prompts:
-        raise HTTPException(status_code=400, detail="未从文件中解析出任何提示词")
+    samples = _extract_samples(obj)
+    if not samples:
+        raise HTTPException(status_code=400, detail="未从文件中解析出任何样本（需含 user_prompt 字段）")
 
-    total_parsed = len(prompts)
+    total_parsed = len(samples)
     # limit=0 表示不截断；limit 为正整数才截断
     if limit is not None and limit > 0:
         truncated = total_parsed > limit
-        prompts = prompts[:limit]
+        samples = samples[:limit]
     else:
         truncated = False
 
     return {
         "team": os.path.splitext(file.filename or "")[0],
         "filename": file.filename,
-        "total": len(prompts),            # 本次返回的条数
+        "total": len(samples),            # 本次返回的条数
         "total_parsed": total_parsed,    # 文件中实际解析出的条数
         "truncated": truncated,
         "max_batch": MAX_ATTACK_BATCH,
-        "prompts": prompts,
+        "samples": samples,
     }
 
 

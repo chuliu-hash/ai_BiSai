@@ -21,12 +21,12 @@ export default function DefenseView() {
   // ── 批量检测 ──
   const testFileRef = useRef(null);
   const [testFile, setTestFile] = useState(null);
-  const [prompts, setPrompts] = useState([]);
+  const [samples, setSamples] = useState([]);
   const [parseInfo, setParseInfo] = useState(null);
   const [parseError, setParseError] = useState('');
   const [parsing, setParsing] = useState(false);
 
-  const [results, setResults] = useState([]);   // [{idx, prompt, ok, verdict, error, elapsed}]
+  const [results, setResults] = useState([]);   // [{idx, sample, ok, verdict, error, elapsed}]
   const [running, setRunning] = useState(false);
   const cancelRef = useRef(false);
 
@@ -83,7 +83,7 @@ export default function DefenseView() {
   // ── 批量检测：上传 JSON 解析 prompt 列表 ──
   function resetTest() {
     setTestFile(null);
-    setPrompts([]);
+    setSamples([]);
     setParseInfo(null);
     setParseError('');
     setResults([]);
@@ -97,12 +97,12 @@ export default function DefenseView() {
     setTestFile({ name: f.name, size: f.size });
     setParsing(true);
     try {
-      const data = await uploadAttack(f, 0); // 复用攻击端点的 JSON 解析
-      setPrompts(data.prompts || []);
+      const data = await uploadAttack(f, 0); // 复用攻击端点的 JSON 解析（含 user_prompt/context/judge_rule）
+      setSamples(data.samples || []);
       setParseInfo({ total: data.total, totalParsed: data.total_parsed, team: data.team });
     } catch (e) {
       setParseError(e.message || '解析失败');
-      setPrompts([]);
+      setSamples([]);
       setParseInfo(null);
     } finally {
       setParsing(false);
@@ -110,13 +110,14 @@ export default function DefenseView() {
   }
 
   async function runTests() {
-    if (!prompts.length || !selected || running) return;
+    if (!samples.length || !selected || running) return;
     cancelRef.current = false;
     setRunning(true);
     setResults([]);
 
     const runTeam = selected;
-    const queue = prompts.map((p, i) => ({ idx: i + 1, prompt: p }));
+    // 防御检测只检 user_prompt（context/judge_rule 与防御检测无关，丢弃）
+    const queue = samples.map((s, i) => ({ idx: i + 1, sample: s, prompt: s.user_prompt }));
     const out = new Array(queue.length);
 
     async function worker() {
@@ -154,8 +155,8 @@ export default function DefenseView() {
     const safe = results.filter((r) => r && r.ok && !r.error && r.verdict === 0).length;
     const unsafe = results.filter((r) => r && r.ok && !r.error && r.verdict === 1).length;
     const errored = results.filter((r) => r && (!r.ok || r.error)).length;
-    return { total: prompts.length, done, safe, unsafe, errored };
-  }, [results, prompts]);
+    return { total: samples.length, done, safe, unsafe, errored };
+  }, [results, samples]);
 
   const progress = stats.total ? Math.round((stats.done / stats.total) * 100) : 0;
   const filled = results.filter(Boolean);
@@ -274,18 +275,18 @@ export default function DefenseView() {
       </section>
 
       {/* 预览 + 检测控制 */}
-      {prompts.length > 0 && (
+      {samples.length > 0 && (
         <section className="grid2">
           <div className="panelCard">
             <div className="panelHeader"><FlaskConical size={20} /><h3>检测配置</h3></div>
             <div style={{ display: 'grid', gap: 14 }}>
               <div className="hintRow">
-                队伍：<strong>{selected || '未选择'}</strong> · 并发 {CONCURRENCY} · 共 {prompts.length} 条
+                队伍：<strong>{selected || '未选择'}</strong> · 并发 {CONCURRENCY} · 共 {samples.length} 条
               </div>
               <div className="actionRow">
                 {!running ? (
                   <button type="button" className="primaryBtn" onClick={runTests} disabled={!selected}>
-                    <FlaskConical size={16} />开始检测 {prompts.length} 条
+                    <FlaskConical size={16} />开始检测 {samples.length} 条
                   </button>
                 ) : (
                   <button type="button" className="ghostBtn" onClick={() => { cancelRef.current = true; }}>
@@ -305,14 +306,14 @@ export default function DefenseView() {
           <div className="panelCard">
             <div className="panelHeader">
               <UploadCloud size={20} />
-              <h3>提示词预览{prompts.length > PREVIEW_CAP ? `（前 ${PREVIEW_CAP} / ${prompts.length}）` : ''}</h3>
+              <h3>提示词预览{samples.length > PREVIEW_CAP ? `（前 ${PREVIEW_CAP} / ${samples.length}）` : ''}</h3>
             </div>
             <div className="promptPreview">
-              {prompts.slice(0, PREVIEW_CAP).map((p, i) => (
-                <div className="row" key={i}><span className="idx">{i + 1}.</span><span className="txt">{p}</span></div>
+              {samples.slice(0, PREVIEW_CAP).map((s, i) => (
+                <div className="row" key={i}><span className="idx">{i + 1}.</span><span className="txt">{s.user_prompt}</span></div>
               ))}
-              {prompts.length > PREVIEW_CAP && (
-                <div className="row moreHint">… 还有 {prompts.length - PREVIEW_CAP} 条未展示，全部参与检测</div>
+              {samples.length > PREVIEW_CAP && (
+                <div className="row moreHint">… 还有 {samples.length - PREVIEW_CAP} 条未展示，全部参与检测</div>
               )}
             </div>
           </div>

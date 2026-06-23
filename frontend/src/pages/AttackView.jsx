@@ -9,7 +9,7 @@ const RESULT_PAGE = 50;     // 结果表分页大小
 export default function AttackView() {
   const fileRef = useRef(null);
   const [file, setFile] = useState(null);          // {name, size}
-  const [prompts, setPrompts] = useState([]);      // 解析出的 prompt 列表（全量）
+  const [samples, setSamples] = useState([]);      // 解析出的样本列表（全量）：{user_prompt, context, judge_rule}
   const [parseInfo, setParseInfo] = useState(null);// {team, total, totalParsed, truncated, maxBatch}
   const [busy, setBusy] = useState(false);         // 解析中
   const [error, setError] = useState('');
@@ -19,7 +19,7 @@ export default function AttackView() {
   const [sensitivity, setSensitivity] = useState('low');
   const [enableRag, setEnableRag] = useState(false);
 
-  // 测试结果：[{idx, prompt, ok, data, error, elapsed}]
+  // 测试结果：[{idx, sample, ok, data, error, elapsed}]
   const [results, setResults] = useState([]);
   const [running, setRunning] = useState(false);
   const cancelRef = useRef(false);
@@ -29,7 +29,7 @@ export default function AttackView() {
 
   function reset() {
     setFile(null);
-    setPrompts([]);
+    setSamples([]);
     setParseInfo(null);
     setError('');
     setResults([]);
@@ -46,7 +46,7 @@ export default function AttackView() {
     setBusy(true);
     try {
       const data = await uploadAttack(f, 0); // 0 = 不截断拿全量
-      setPrompts(data.prompts || []);
+      setSamples(data.samples || []);
       setParseInfo({
         team: data.team,
         total: data.total,
@@ -56,7 +56,7 @@ export default function AttackView() {
       });
     } catch (e) {
       setError(e.message || '上传解析失败');
-      setPrompts([]);
+      setSamples([]);
       setParseInfo(null);
     } finally {
       setBusy(false);
@@ -68,7 +68,7 @@ export default function AttackView() {
   }
 
   async function runTests() {
-    if (!prompts.length || running) return;
+    if (!samples.length || running) return;
     cancelRef.current = false;
     setRunning(true);
     setResults([]);
@@ -79,7 +79,7 @@ export default function AttackView() {
     const runEndpoint = endpoint;
     const runSensitivity = sensitivity;
     const runEnableRag = enableRag;
-    const queue = prompts.map((p, i) => ({ idx: i + 1, prompt: p }));
+    const queue = samples.map((s, i) => ({ idx: i + 1, sample: s }));
     const out = new Array(queue.length);
 
     async function worker() {
@@ -89,8 +89,8 @@ export default function AttackView() {
         let entry = { ...item, endpoint: runEndpoint, ok: false, data: null, error: '', elapsed: 0 };
         try {
           const data = runEndpoint === 'no_defense'
-            ? await attackNoDefense(item.prompt)
-            : await attackWithShield(item.prompt, { sensitivity: runSensitivity, enableRag: runEnableRag });
+            ? await attackNoDefense(item.sample)
+            : await attackWithShield(item.sample, { sensitivity: runSensitivity, enableRag: runEnableRag });
           entry = { ...entry, ok: true, data, elapsed: performance.now() - start };
         } catch (e) {
           entry = { ...entry, error: e.message || '请求失败', elapsed: performance.now() - start };
@@ -119,8 +119,8 @@ export default function AttackView() {
     const passed = verdicts.filter((v) => v === 'safe').length;
     const blocked = verdicts.filter((v) => v === 'blocked').length;
     const errored = verdicts.filter((v) => v === 'error').length;
-    return { total: prompts.length, done, passed, blocked, errored };
-  }, [results, prompts]);
+    return { total: samples.length, done, passed, blocked, errored };
+  }, [results, samples]);
 
   const progress = stats.total ? Math.round((stats.done / stats.total) * 100) : 0;
 
@@ -181,7 +181,7 @@ export default function AttackView() {
       </section>
 
       {/* 预览 + 测试配置 */}
-      {prompts.length > 0 && (
+      {samples.length > 0 && (
         <section className="grid2">
           <div className="panelCard">
             <div className="panelHeader"><FlaskConical size={20} /><h3>测试配置</h3></div>
@@ -214,13 +214,13 @@ export default function AttackView() {
               )}
 
               <div className="hintRow">
-                并发 {CONCURRENCY} · 共 {prompts.length} 条 · 预计单条耗时取决于后端
+                并发 {CONCURRENCY} · 共 {samples.length} 条 · 预计单条耗时取决于后端
               </div>
 
               <div className="actionRow">
                 {!running ? (
                   <button type="button" className="primaryBtn" onClick={runTests}>
-                    <FlaskConical size={16} />开始测试 {prompts.length} 条
+                    <FlaskConical size={16} />开始测试 {samples.length} 条
                   </button>
                 ) : (
                   <button type="button" className="ghostBtn" onClick={cancel}>
@@ -241,14 +241,14 @@ export default function AttackView() {
           <div className="panelCard">
             <div className="panelHeader">
               <UploadCloud size={20} />
-              <h3>提示词预览{prompts.length > PREVIEW_CAP ? `（前 ${PREVIEW_CAP} / ${prompts.length}）` : ''}</h3>
+              <h3>提示词预览{samples.length > PREVIEW_CAP ? `（前 ${PREVIEW_CAP} / ${samples.length}）` : ''}</h3>
             </div>
             <div className="promptPreview">
-              {prompts.slice(0, PREVIEW_CAP).map((p, i) => (
-                <div className="row" key={i}><span className="idx">{i + 1}.</span><span className="txt">{p}</span></div>
+              {samples.slice(0, PREVIEW_CAP).map((s, i) => (
+                <div className="row" key={i}><span className="idx">{i + 1}.</span><span className="txt">{s.user_prompt}</span></div>
               ))}
-              {prompts.length > PREVIEW_CAP && (
-                <div className="row moreHint">… 还有 {prompts.length - PREVIEW_CAP} 条未展示，全部参与测试</div>
+              {samples.length > PREVIEW_CAP && (
+                <div className="row moreHint">… 还有 {samples.length - PREVIEW_CAP} 条未展示，全部参与测试</div>
               )}
             </div>
           </div>
@@ -299,7 +299,7 @@ export default function AttackView() {
                   return (
                     <tr key={r.idx}>
                       <td>{r.idx}</td>
-                      <td className="cellPrompt">{r.prompt}</td>
+                      <td className="cellPrompt">{r.sample?.user_prompt ?? r.prompt}</td>
                       <td>
                         {j === 'error' ? <span className="toneTag amber">出错</span>
                           : j === 'safe' ? <span className="toneTag green">未拦截</span>
