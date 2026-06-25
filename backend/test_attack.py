@@ -72,7 +72,8 @@ def _bypass_proxy_for(base_url):
 def extract_samples(obj):
     """从解析后的 JSON 抽取攻击样本（与后端 app._extract_samples 一致，本脚本自包含实现）。
 
-    每条样本：{user_prompt, context, judge_rule}；context/judge_rule 缺省补 ""。
+    每条样本：{user_prompt, context, judge_rule, category, sample_id}。
+    context/judge_rule 缺省补 ""；额外保留 category（用于区分 benign/恶意）与 sample_id。
     兼容对象数组 与 {队名:[样本,...]} 按队分组形态。
     """
     samples = []
@@ -87,6 +88,8 @@ def extract_samples(obj):
                     "user_prompt": up,
                     "context": ctx if isinstance(ctx, str) else "",
                     "judge_rule": jr if isinstance(jr, str) else "",
+                    "category": item.get("category") or "",
+                    "sample_id": item.get("sample_id") or "",
                 })
 
     if isinstance(obj, list):
@@ -149,8 +152,9 @@ def slim(obj):
 
 
 def show(title, sample, http, elapsed, line):
-    """打印一行精简结果：标题 + 三字段各取前20字 + 摘要行。"""
-    print(f"{title}  [{http}] {elapsed:.2f}s")
+    """打印一行精简结果：标题 + category + 三字段各取前50字 + 摘要行。"""
+    cat = sample.get("category") or "?"
+    print(f"{title}  [{http}] {elapsed:.2f}s  (category={cat})")
     print(f"  user_prompt: {head(sample['user_prompt'])}")
     print(f"  context:     {head(sample['context'])}")
     print(f"  judge_rule:  {head(sample['judge_rule'])}")
@@ -208,13 +212,15 @@ def _is_attack_with_shield(data):
 
 
 def run_one(base_url, sample, sensitivity, enable_rag, only, timeout):
-    """对一条样本跑选定端点，返回记录：三字段(前50字,便于阅读) + 各端点完整响应 + 是否检出。"""
+    """对一条样本跑选定端点，返回记录：category + 三字段(前50字) + 各端点完整响应 + 是否检出。"""
     payload = {
         "user_prompt": sample["user_prompt"],
         "context": sample["context"],
         "judge_rule": sample["judge_rule"],
     }
     rec = {
+        "sample_id": sample.get("sample_id", ""),
+        "category": sample.get("category", ""),
         "user_prompt": head(sample["user_prompt"]),
         "context": head(sample["context"]),
         "judge_rule": head(sample["judge_rule"]),
@@ -240,35 +246,62 @@ def run_one(base_url, sample, sensitivity, enable_rag, only, timeout):
     return rec
 
 
-def compute_accuracy(results, only):
-    """计算攻击样本的检测精度：被检出为攻击(被拦截)的占比。
+def _rate(num, den):
+    return f"{(num / den * 100):.1f}%" if den else "N/A"
 
-    only 决定用哪条路径判定：
-      · with_shield / both → 用模盾检测结果（is_safe=False 即被检出）
-      · no_defense         → 无防护模型无检测，不计精度（valid=0）
-    异常/未判定(detected=None 或有 error)不计入分母，单独计入 skipped。
-    返回 {"attack_detection": {"blocked","valid","skipped","rate"}}。
+
+def compute_accuracy(results, only):
+    """计算检测精度，按 category 区分良性(benign)/恶意样本。
+
+    语义：
+      · 恶意样本(非 benign)：被检出(detected=True) 才算正确 → 攻击检出率(TPR/召回)
+      · 良性样本(benign)：未被检出(detected=False) 才算正确 → 正确放行率(=1-误报率FPR)
+    异常/未判定(detected=None 或有 error)或 no_defense 模式不计入有效分母，单独计入 skipped。
+
+    only=with_shield/both 才有检测能力；no_defense 全部 skipped。
+
+    返回:
+      {
+        "attack_detection": {"detected","valid","rate"},         # 恶意检出率
+        "benign_pass":      {"correct","valid","rate"},          # 良性正确放行率
+        "false_positive":   {"flagged","valid","rate"},          # 良性误报率(=1-pass)
+        "overall":          {"correct","valid","rate"},          # 整体正确率
+        "skipped":          int,
+      }
     """
-    blocked = valid = skipped = 0
     use_shield = only in ("with_shield", "both")
+    a_det = a_val = 0          # 恶意：检出数 / 有效数
+    b_ok = b_val = 0           # 良性：正确放行数 / 有效数
+    b_fp = 0                   # 良性：误报(被检出)数
+    skipped = 0
     for r in results:
-        if r.get("error"):
-            skipped += 1
-            continue
-        if not use_shield:
-            # no_defense 无检测能力
+        if r.get("error") or not use_shield:
             skipped += 1
             continue
         det = r.get("detected")
         if det is None:
             skipped += 1
-        elif det:
-            blocked += 1
-            valid += 1
-        else:
-            valid += 1
-    rate = f"{(blocked / valid * 100):.1f}%" if valid else "N/A"
-    return {"attack_detection": {"blocked": blocked, "valid": valid, "skipped": skipped, "rate": rate}}
+            continue
+        is_benign = (r.get("category") or "").lower() == "benign"
+        if is_benign:
+            b_val += 1
+            if det:        # 良性被检出 = 误报
+                b_fp += 1
+            else:          # 良性放行 = 正确
+                b_ok += 1
+        else:              # 恶意样本
+            a_val += 1
+            if det:        # 恶意被检出 = 正确
+                a_det += 1
+    correct = a_det + b_ok
+    valid = a_val + b_val
+    return {
+        "attack_detection": {"detected": a_det, "valid": a_val, "rate": _rate(a_det, a_val)},
+        "benign_pass": {"correct": b_ok, "valid": b_val, "rate": _rate(b_ok, b_val)},
+        "false_positive": {"flagged": b_fp, "valid": b_val, "rate": _rate(b_fp, b_val)},
+        "overall": {"correct": correct, "valid": valid, "rate": _rate(correct, valid)},
+        "skipped": skipped,
+    }
 
 
 def main():
@@ -319,6 +352,8 @@ def main():
     for i, s in enumerate(samples, 1):
         print(f"\n# 样本 {i}/{len(samples)}")
         rec = {
+            "sample_id": s.get("sample_id", ""),
+            "category": s.get("category", ""),
             "user_prompt": head(s["user_prompt"]),
             "context": head(s["context"]),
             "judge_rule": head(s["judge_rule"]),
@@ -337,14 +372,20 @@ def main():
             rec["error"] = str(e)
         results.append(rec)
 
-    # 检测精度：攻击样本中被检出为攻击的占比（仅 with_shield 有检测；异常/未判定不计入分母）
+    # 检测精度：按 category 区分恶意/良性（仅 with_shield/both 有检测能力）
     summary = compute_accuracy(results, args.only)
+    a = summary["attack_detection"]
+    b = summary["benign_pass"]
+    fp = summary["false_positive"]
+    o = summary["overall"]
 
     print(f"\n{'─' * 60}")
-    print(f"检测精度（攻击被检出占比）: {summary['attack_detection']['rate']}  "
-          f"({summary['attack_detection']['blocked']}/{summary['attack_detection']['valid']})")
-    if summary['attack_detection']['skipped']:
-        print(f"  (另有 {summary['attack_detection']['skipped']} 条异常/未判定，未计入)")
+    print(f"恶意样本检出率(TPR): {a['rate']}  ({a['detected']}/{a['valid']})")
+    print(f"良性样本正确放行率:  {b['rate']}  ({b['correct']}/{b['valid']})")
+    print(f"良性样本误报率(FPR): {fp['rate']}  ({fp['flagged']}/{fp['valid']})")
+    print(f"整体正确率:          {o['rate']}  ({o['correct']}/{o['valid']})")
+    if summary["skipped"]:
+        print(f"  (另有 {summary['skipped']} 条异常/未判定/no_defense，未计入)")
 
     # 写入结果 JSON（含完整响应 + 精度汇总）
     if args.out:
