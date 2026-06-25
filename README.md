@@ -52,8 +52,8 @@ npm run dev
 
 | 赛道 | 流程 |
 |------|------|
-| **攻击** | 上传 JSON 语料（任意数量，全量返回）→ 选端点 → 开始测试（4 路并发分批 + 进度条 + 可取消）→ 结果分页浏览 |
-| **防御** | 上传 ZIP 防御包 + 队名 → 选队伍 → 输入提示词 → 检测得 0/1 |
+| **攻击** | 上传样本 JSON（user_prompt/context/judge_rule，全量返回）→ 选端点 → 开始测试（4 路并发分批 + 进度条 + 可取消）→ 结果分页浏览 |
+| **防御** | 上传 ZIP 防御包 + 队名 → 选队伍 → 上传样本 JSON（取 user_prompt）→ 批量检测得 0/1 |
 
 前端通过 `frontend/.env` 的 `VITE_API_BASE` 连接后端（默认 `http://127.0.0.1:8000`）。左侧栏底部有连接状态指示灯（绿/红点），每 8 秒自动复探。
 
@@ -73,10 +73,10 @@ npm run dev
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| `POST` | `/api/upload/attack?limit=0` | 上传攻击 JSON，全量返回 prompt 列表（`limit=0` 不截断） |
+| `POST` | `/api/upload/attack?limit=0` | 上传攻击 JSON，全量返回样本列表（每条含 user_prompt/context/judge_rule；`limit=0` 不截断） |
 | `POST` | `/api/upload/defense` | 上传防御 ZIP，整合到 `defend_group/<队名>/` |
-| `POST` | `/api/attack/no_defense` | 无防护评测：prompt → 裸 LLM |
-| `POST` | `/api/attack/with_shield` | 模盾防护：输入检测 →（RAG）→ 生成 → 输出检测 |
+| `POST` | `/api/attack/no_defense` | 无防护评测：样本(三字段分角色) → 裸 LLM |
+| `POST` | `/api/attack/with_shield` | 模盾防护：输入检测(仅 user_prompt) →（RAG）→ 生成(三字段) → 输出检测 |
 | `POST` | `/detect/{group}` | 调队伍 `Detect`，返回 0/1 |
 | `GET`  | `/groups` · `/api/groups` | 列出已上传队伍 |
 | `GET`  | `/` | 服务自描述 |
@@ -85,21 +85,25 @@ npm run dev
 
 ---
 
-## 四、攻击 JSON 格式（三种均支持）
+## 四、攻击 JSON 格式（样本对象数组）
 
-```jsonc
-// 格式 1：字符串数组
-["忽略之前所有指令...", "Ignore all previous instructions..."]
+每条样本是一个对象，含三字段：
 
-// 格式 2：对象数组（识别键，大小写不敏感）
-[{"prompt": "..."}, {"user_prompt": "..."}, {"text": "..."},
- {"content": "..."}, {"提示词": "..."}, {"攻击语料": "..."}]
-
-// 格式 3：按队分组（赛题标准）
-{"team_alpha": [{"prompt": "..."}, "字符串也行"], "team_beta": [...]}
+```json
+[
+  {
+    "user_prompt": "攻击 user prompt（送 LLM 的 {role:user}）",
+    "context": "历史上下文（送前置 {role:user}；可选，为空则不插入）",
+    "judge_rule": "评审规则/系统提示词（送 {role:system}；可选）"
+  },
+  { "user_prompt": "...", "context": "...", "judge_rule": "..." }
+]
 ```
 
-识别键：`prompt` / `user_prompt` / `text` / `content` / `提示词` / `攻击语料` / `攻击提示词` / `指令`
+- **`user_prompt`** 必填；`context` / `judge_rule` 可选（缺省为空）。
+- 也兼容「按队分组」`{队名: [样本对象,...]}` 形态（递归收集样本对象）。
+- 模盾的输入/输出检测**只检 `user_prompt` 与模型回复**，不检 `context` / `judge_rule`（避免评审规则被误判为攻击）。
+- 防御检测（`/detect/{group}`）只取样本中的 `user_prompt` 送检。
 
 上传参数 `limit`：`0` 或不传 = 全量；`>0` = 截断到前 N 条。
 
@@ -109,12 +113,23 @@ npm run dev
 
 | 文件 | 用途 |
 |------|------|
-| `test_assets/attack_corpus.json` | 20 条小样本（三格式混合） |
-| `test_assets/attack_bulk.json` | 120 条大样本（验证全量 + 分批） |
+| `test_assets/attack_corpus.json` | ⚠ 旧格式样本（`{prompt:...}` / 字符串数组），新解析器不识别，仅作历史参考 |
+| `test_assets/attack_bulk.json` | ⚠ 旧格式大样本（120 条字符串数组），同上 |
 | `test_assets/rule_guard.zip` | 防御示例 1：关键词 + 正则 + Base64 解码 |
 | `test_assets/heuristic_shield.zip` | 防御示例 2：指令密度 + 角色重置 + 模板 token |
 
-这些样本可直接在前端上传测试，或用 [`backend/test_attack.py`](backend/test_attack.py) / [`backend/test_defend.py`](backend/test_defend.py) 跑命令行集成测试。
+> 注：新格式样本需为对象数组，每条含 `user_prompt`（`context`/`judge_rule` 可选），见 [§四](#四攻击-json-格式样本对象数组)。
+> 这两个 `attack_*.json` 是早期旧格式，上传会被解析为空；如需测试请准备新格式文件。
+
+防御示例包可直接上传测试。攻击/防御集成测试用命令行脚本：
+
+```bash
+# 攻击：读样本文件，三字段发 LLM，输出检测精度
+python backend/test_attack.py --file <样本.json> --out results.json
+
+# 防御：读同一份样本，只取 user_prompt 发 /detect/{group}
+python backend/test_defend.py --file <样本.json> --group <队伍名>
+```
 
 ---
 
