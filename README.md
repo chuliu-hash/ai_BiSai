@@ -64,7 +64,6 @@ npm run dev
 | 文档 | 内容 |
 |------|------|
 | [`backend/server_API.md`](backend/server_API.md) | **后端 API 完整说明**（所有端点、字段、错误码、调用示例） |
-| [`backend/summary.md`](backend/summary.md) | 考题及规则总结（四大风险类型、评分机制） |
 | [`backend/defend_group/README.md`](backend/defend_group/README.md) | 防御队伍提交规范（Detect 接口 + 目录结构） |
 
 ---
@@ -76,7 +75,7 @@ npm run dev
 | `POST` | `/api/upload/attack?limit=0` | 上传攻击 JSON，全量返回样本列表（每条含 user_prompt/context/judge_rule；`limit=0` 不截断） |
 | `POST` | `/api/upload/defense` | 上传防御 ZIP，整合到 `defend_group/<队名>/` |
 | `POST` | `/api/attack/no_defense` | 无防护评测：样本(三字段分角色) → 裸 LLM |
-| `POST` | `/api/attack/with_shield` | 模盾防护：输入检测(仅 user_prompt) →（RAG）→ 生成(三字段) → 输出检测 |
+| `POST` | `/api/attack/with_shield` | 模盾防护：输入检测(仅 user_prompt) →（RAG）→ 生成(三字段) →（仅当输入 `p_safe<0.8`）输出检测 |
 | `POST` | `/detect/{group}` | 调队伍 `Detect`，返回 0/1 |
 | `GET`  | `/groups` · `/api/groups` | 列出已上传队伍 |
 | `GET`  | `/` | 服务自描述 |
