@@ -14,6 +14,10 @@ from config import (
     _detect_slot, _get_detector, _get_scr, _get_output_detector,
 )
 
+# 输出检测触发闸门：输入检测判为安全(prediction=0)后，仅当 p_safe < 此阈值
+# （即对「安全」不够自信）才执行输出检测兜底；p_safe ≥ 此阈值则直接放行，跳过输出检测。
+INPUT_PSAFE_OUTPUT_GATE = 0.8
+
 
 def call_llm(user_prompt: str, base_url: str, model: str,
              context: str = "", judge_rule: str = "", temperature: float = 0.7) -> str:
@@ -163,6 +167,19 @@ def _process_with_shield(sample: Dict, sensitivity: str, enable_rag: bool,
         }
         return record
     record["model_response"] = resp
+
+    # ── 输出检测触发闸门 ──
+    # 仅当输入检测判安全(prediction=0) 且 p_safe < INPUT_PSAFE_OUTPUT_GATE（对安全不够自信）时，
+    # 才执行输出检测兜底；若 p_safe ≥ 阈值（很自信安全），直接放行，跳过输出检测。
+    if input_detection["is_safe"] and input_detection.get("p_safe", 1.0) >= INPUT_PSAFE_OUTPUT_GATE:
+        record["shield"] = {
+            "is_safe": True,
+            "stopped_at": None,
+            "input_detection": input_detection,
+            "rag": rag_info,
+            "output_detection": None,   # 跳过：输入检测高置信安全
+        }
+        return record
 
     # ── 模盾层3：输出检测（复用常驻实例；内部 5 规则并发）──
     try:
