@@ -265,10 +265,16 @@ def run_defense_pipeline(base_url: str, group: str, samples: list,
 # ─────────────────────── 在线测试：攻击判题全链路（文件 → attack → judge → aggregate） ───────────────────────
 
 def run_attack_pipeline(base_url: str, samples: list,
-                         timeout: float, limit: int, verbose: bool) -> dict:
-    """从样本文件出发：attack(no_defense+with_shield) → judge → aggregate 全链路。
+                         timeout: float, limit: int, verbose: bool,
+                         shield_mode: str = "both") -> dict:
+    """从样本文件出发：attack → judge → aggregate 全链路。
 
     自动过滤 benign 样本（攻击判题只针对攻击类别）。
+
+    shield_mode:
+        "both"       — 同时测 no_defense + with_shield（默认）
+        "no_defense" — 仅无防护，不调 with_shield
+        "with_shield" — 仅带盾，不调 no_defense
     """
     if limit > 0:
         samples = samples[:limit]
@@ -287,7 +293,8 @@ def run_attack_pipeline(base_url: str, samples: list,
         return {"judged_count": 0, "aggregated": {"final_score": 0.0}, "judged": []}
 
     print(f"\n{'=' * 70}")
-    print(f"攻击全链路: {len(samples)} 条样本")
+    mode_label = {"both": "no_defense + with_shield", "no_defense": "仅无防护", "with_shield": "仅带盾"}
+    print(f"攻击全链路: {len(samples)} 条样本 | 模式={mode_label.get(shield_mode, shield_mode)}")
     print(f"{'=' * 70}")
 
     judged = []
@@ -304,37 +311,45 @@ def run_attack_pipeline(base_url: str, samples: list,
 
         # 1) no_defense
         no_defense_resp = None
-        try:
-            code, nd_data, t = call_api(
-                base_url, "/api/attack/no_defense",
-                {"user_prompt": up, "context": ctx, "judge_rule": rule},
-                timeout)
-            if code == 200:
-                no_defense_resp = nd_data
-                resp_trunc = head(str(nd_data.get("model_response", "")))
-                print(f"    no_defense: {resp_trunc} [{t:.2f}s]")
-            else:
-                print(f"    ✗ no_defense 失败: HTTP {code}")
-        except requests.RequestException as e:
-            print(f"    ✗ no_defense 请求异常: {e}")
+        if shield_mode in ("both", "no_defense"):
+            try:
+                code, nd_data, t = call_api(
+                    base_url, "/api/attack/no_defense",
+                    {"user_prompt": up, "context": ctx, "judge_rule": rule},
+                    timeout)
+                if code == 200:
+                    no_defense_resp = nd_data
+                    resp_trunc = head(str(nd_data.get("model_response", "")))
+                    print(f"    no_defense: {resp_trunc} [{t:.2f}s]")
+                else:
+                    print(f"    ✗ no_defense 失败: HTTP {code}")
+            except requests.RequestException as e:
+                print(f"    ✗ no_defense 请求异常: {e}")
+        else:
+            if verbose:
+                print(f"    no_defense: 跳过 (--shield-mode={shield_mode})")
 
         # 2) with_shield
         with_shield_resp = None
-        try:
-            code, ws_data, t = call_api(
-                base_url, "/api/attack/with_shield",
-                {"user_prompt": up, "context": ctx, "judge_rule": rule,
-                 "sensitivity": "low", "enable_rag": False},
-                timeout)
-            if code == 200:
-                with_shield_resp = ws_data
-                shield = ws_data.get("shield", {})
-                is_safe = shield.get("is_safe", "N/A")
-                print(f"    with_shield: is_safe={is_safe} [{t:.2f}s]")
-            else:
-                print(f"    ✗ with_shield 失败: HTTP {code}")
-        except requests.RequestException as e:
-            print(f"    ✗ with_shield 请求异常: {e}")
+        if shield_mode in ("both", "with_shield"):
+            try:
+                code, ws_data, t = call_api(
+                    base_url, "/api/attack/with_shield",
+                    {"user_prompt": up, "context": ctx, "judge_rule": rule,
+                     "sensitivity": "low", "enable_rag": False},
+                    timeout)
+                if code == 200:
+                    with_shield_resp = ws_data
+                    shield = ws_data.get("shield", {})
+                    is_safe = shield.get("is_safe", "N/A")
+                    print(f"    with_shield: is_safe={is_safe} [{t:.2f}s]")
+                else:
+                    print(f"    ✗ with_shield 失败: HTTP {code}")
+            except requests.RequestException as e:
+                print(f"    ✗ with_shield 请求异常: {e}")
+        else:
+            if verbose:
+                print(f"    with_shield: 跳过 (--shield-mode={shield_mode})")
 
         # 3) judge attack
         try:
@@ -350,7 +365,12 @@ def run_attack_pipeline(base_url: str, samples: list,
             if code2 == 200:
                 nd_succ = judge_data.get("no_defense_success")
                 ws_succ = judge_data.get("with_shield_success")
-                print(f"    judge: no_defense={nd_succ}  with_shield={ws_succ} [{t2:.2f}s]")
+                parts = []
+                if shield_mode in ("both", "no_defense"):
+                    parts.append(f"no_defense={nd_succ}")
+                if shield_mode in ("both", "with_shield"):
+                    parts.append(f"with_shield={ws_succ}")
+                print(f"    judge: {'  '.join(parts)} [{t2:.2f}s]")
                 if judge_data.get("judge_error"):
                     print(f"      [注意] judge_error={judge_data['judge_error']}")
                 judged.append(judge_data)
@@ -621,6 +641,9 @@ def main() -> None:
                     help="防御检测目标队伍（仅 --file 时生效）")
     ap.add_argument("--limit", type=int, default=0,
                     help="只测前 N 条（0 = 全量）")
+    ap.add_argument("--shield-mode", choices=["both", "no_defense", "with_shield"],
+                    default="both",
+                    help="攻击判题模式：both=都测 / no_defense=仅无防护 / with_shield=仅带盾")
     args = ap.parse_args()
 
     _load_env(os.path.join(_HERE, ".env"))
@@ -681,7 +704,8 @@ def main() -> None:
         if args.only in ("attack", "all"):
             results["attack_pipeline"] = run_attack_pipeline(
                 args.base_url, samples,
-                args.timeout, args.limit, args.verbose)
+                args.timeout, args.limit, args.verbose,
+                shield_mode=args.shield_mode)
 
         elapsed = time.time() - t0
         print(f"\n{'=' * 70}\n文件测试完成! 耗时 {elapsed:.2f}s")
