@@ -17,6 +17,7 @@ DEFAULT_LLM_MODEL = os.environ.get("LLM_SERVER_MODEL", "Qwen3")
 MAX_CONCURRENT_DETECT = int(os.environ.get("MAX_CONCURRENT_DETECT", "12"))
 DETECT_QUEUE_TIMEOUT = float(os.environ.get("DETECT_QUEUE_TIMEOUT", "120"))
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "60"))
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 
 # ── 并发原语 ──
 # 全局并发闸门：限制同时在跑 BERT 输入检测的请求数

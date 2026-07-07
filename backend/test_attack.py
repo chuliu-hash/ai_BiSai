@@ -21,6 +21,9 @@
     # 5) 把检测结果写入 JSON（便于留存/对比；不传则只打印）
     python test_attack.py --file test_samples.json --out results.json
 
+    # 6) 单独输出漏报/误报样本到文件
+    python test_attack.py --file test_samples.json --errors-out errors.json
+
 JSON 样本格式（与前端上传格式一致，由服务端 _extract_samples 解析）：
     [
       {"user_prompt": "...", "context": "...", "judge_rule": "..."},
@@ -127,7 +130,7 @@ def call(base_url, path, payload, timeout):
     return r.status_code, data, elapsed
 
 
-HEAD = 50  # 文本字段打印/保存时的截断长度（字符）
+HEAD = 100  # 文本字段打印/保存时的截断长度（字符）
 
 
 def head(s):
@@ -267,6 +270,8 @@ def compute_accuracy(results, only):
         "false_positive":   {"flagged","valid","rate"},          # 良性误报率(=1-pass)
         "overall":          {"correct","valid","rate"},          # 整体正确率
         "skipped":          int,
+        "false_negatives":  [错误样本详情],   # 漏报（恶意但未被检出）
+        "false_positives":  [错误样本详情],   # 误报（良性但被检出）
       }
     """
     use_shield = only in ("with_shield", "both")
@@ -274,6 +279,9 @@ def compute_accuracy(results, only):
     b_ok = b_val = 0           # 良性：正确放行数 / 有效数
     b_fp = 0                   # 良性：误报(被检出)数
     skipped = 0
+    false_negatives = []       # 漏报样本详情
+    false_positives = []       # 误报样本详情
+
     for r in results:
         if r.get("error") or not use_shield:
             skipped += 1
@@ -283,16 +291,27 @@ def compute_accuracy(results, only):
             skipped += 1
             continue
         is_benign = (r.get("category") or "").lower() == "benign"
+        # 构造样本标识信息（用于错误列表）
+        sample_info = {
+            "index": r.get("index"),
+            "sample_id": r.get("sample_id"),
+            "category": r.get("category"),
+            "user_prompt": r.get("user_prompt"),   # 已截断
+            "detected": det
+        }
         if is_benign:
             b_val += 1
             if det:        # 良性被检出 = 误报
                 b_fp += 1
+                false_positives.append({**sample_info, "note": "误报: 良性样本被判定为攻击"})
             else:          # 良性放行 = 正确
                 b_ok += 1
         else:              # 恶意样本
             a_val += 1
             if det:        # 恶意被检出 = 正确
                 a_det += 1
+            else:          # 恶意未被检出 = 漏报
+                false_negatives.append({**sample_info, "note": "漏报: 恶意样本未被检出"})
     correct = a_det + b_ok
     valid = a_val + b_val
     return {
@@ -301,6 +320,8 @@ def compute_accuracy(results, only):
         "false_positive": {"flagged": b_fp, "valid": b_val, "rate": _rate(b_fp, b_val)},
         "overall": {"correct": correct, "valid": valid, "rate": _rate(correct, valid)},
         "skipped": skipped,
+        "false_negatives": false_negatives,
+        "false_positives": false_positives,
     }
 
 
@@ -312,10 +333,12 @@ def main():
                     help="只测前 N 条（0 或不传 = 全量）")
     ap.add_argument("--sensitivity", default="low", choices=["low", "medium", "high"])
     ap.add_argument("--enable-rag", action="store_true")
-    ap.add_argument("--only", choices=["no_defense", "with_shield", "both"], default="both")
+    ap.add_argument("--only", choices=["no_defense", "with_shield", "both"], default="with_shield")
     ap.add_argument("--timeout", type=float, default=120.0)
     ap.add_argument("--out", default=None,
                     help="把完整检测结果写入该 JSON（含三字段前50字+完整响应+检测精度）；不传则只打印")
+    ap.add_argument("--errors-out", default=None,
+                    help="将漏报和误报的样本详情写入指定文件（JSON 格式）")
     args = ap.parse_args()
 
     # 加载 .env，并确保目标地址绕过代理
@@ -352,6 +375,7 @@ def main():
     for i, s in enumerate(samples, 1):
         print(f"\n# 样本 {i}/{len(samples)}")
         rec = {
+            "index": i,  # 增加序号，便于错误定位
             "sample_id": s.get("sample_id", ""),
             "category": s.get("category", ""),
             "user_prompt": head(s["user_prompt"]),
@@ -370,6 +394,8 @@ def main():
         except requests.exceptions.RequestException as e:
             print(f"  [请求失败] {e}")
             rec["error"] = str(e)
+        # 确保 index 不丢失（run_one 返回的 rec 中没有 index，补上）
+        rec.setdefault("index", i)
         results.append(rec)
 
     # 检测精度：按 category 区分恶意/良性（仅 with_shield/both 有检测能力）
@@ -387,11 +413,25 @@ def main():
     if summary["skipped"]:
         print(f"  (另有 {summary['skipped']} 条异常/未判定/no_defense，未计入)")
 
+    # 写入错误样本文件
+    if args.errors_out:
+        errors_data = {
+            "summary": {
+                "false_negatives_count": len(summary["false_negatives"]),
+                "false_positives_count": len(summary["false_positives"]),
+            },
+            "false_negatives": summary["false_negatives"],
+            "false_positives": summary["false_positives"],
+        }
+        with open(args.errors_out, "w", encoding="utf-8") as ef:
+            json.dump(errors_data, ef, ensure_ascii=False, indent=2)
+        print(f"\n错误样本详情已写入: {os.path.abspath(args.errors_out)}")
+
     # 写入结果 JSON（含完整响应 + 精度汇总）
     if args.out:
         out = {
             "total": len(results),
-            "accuracy": summary,
+            "accuracy": {k: v for k, v in summary.items() if k not in ("false_negatives", "false_positives")},
             "results": results,
         }
         with open(args.out, "w", encoding="utf-8") as f:

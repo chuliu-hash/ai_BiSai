@@ -20,7 +20,7 @@ INPUT_PSAFE_OUTPUT_GATE = 0.8
 
 
 def call_llm(user_prompt: str, base_url: str, model: str,
-             context: str = "", judge_rule: str = "", temperature: float = 0.7) -> str:
+             context: str = "", judge_rule: str = "", temperature: float = 0.0) -> str:
     """调用后端大模型（带超时）。
 
     三字段按角色组装 messages：

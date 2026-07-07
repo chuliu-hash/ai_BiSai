@@ -16,7 +16,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +28,14 @@ from config import (
     _req_pool, _get_detector, _get_output_detector,
 )
 from core import _process_no_defense, _process_with_shield
+from competition_judge_interface import (
+    judge_attack_case,
+    judge_defense_detection_case,
+    judge_defense_case,
+    aggregate_attack_score,
+    aggregate_defense_score,
+)
+from config import DEEPSEEK_API_KEY as JUDGE_API_KEY
 
 
 # ───────────────────────── 请求模型 ─────────────────────────
@@ -47,6 +55,35 @@ class ShieldedAttackRequest(AttackRequest):
 
 class DetectRequest(BaseModel):
     user_prompt: str = Field(..., min_length=1, description="待检测的用户提示词")
+
+
+# ───────────────────────── 判题请求模型 ─────────────────────────
+
+class JudgeAttackRequest(BaseModel):
+    """攻击判题：传入样本 + 无防护响应 + 模盾响应（可选）。"""
+    sample: dict = Field(..., description="攻击样本，至少含 sample_id/category/user_prompt")
+    no_defense_response: Any = None
+    with_shield_response: Any = None
+    judge_prompt_path: Optional[str] = None
+
+
+class JudgeDefenseRequest(BaseModel):
+    """防御判题：传入样本 + detect_result（优先）或 score。"""
+    sample: dict = Field(..., description="防御样本，至少含 sample_id/category/user_prompt")
+    detect_result: Any = None
+    score: Any = None
+    score_reason: Optional[str] = None
+
+
+class JudgeAttackAggregateRequest(BaseModel):
+    """攻击得分汇总：传入 judged_samples 列表。"""
+    judged_samples: list = Field(..., description="judge_attack_case 的输出列表")
+    denominator_mode: str = Field("actual", description="'actual' 或 'max'")
+
+
+class JudgeDefenseAggregateRequest(BaseModel):
+    """防御得分汇总：传入 judged_samples 列表。"""
+    judged_samples: list = Field(..., description="judge_defense_detection_case 的输出列表")
 
 
 # ───────────────────────── 线程池 ─────────────────────────
@@ -95,15 +132,20 @@ def _safe_team(name: str) -> str:
 
 
 def _extract_samples(obj) -> list:
-    """从解析后的 JSON 抽取攻击样本列表（新格式：每条含三字段）。
+    """从解析后的 JSON 抽取攻击样本列表（保留全部原始字段）。
 
-    样本格式：对象数组，每个对象含：
+    样本格式：对象数组，每个对象至少含：
       · user_prompt : str —— 攻击 user prompt（必填，送 {role:user}）
-      · context     : str —— 历史上下文（可选，默认空串，送前置 {role:user} 消息）
-      · judge_rule  : str —— 评审规则/系统提示词（可选，默认空串，送 {role:system}）
+
+    还可含任意可选字段（原样透传）：
+      · context     : str —— 历史上下文（默认空串，送前置 {role:user} 消息）
+      · judge_rule  : str —— 评审规则/系统提示词（默认空串，送 {role:system}）
+      · sample_id   : str —— 样本标识（判题用）
+      · category    : str —— 样本类别（判题用；如 benign / prompt_injection）
+      · language    : str —— 语言（判题用）
 
     支持顶层是对象数组，也兼容「按队分组」{队名: [对象,...]} 形态（递归收集）。
-    统一返回 list[dict]，每个 dict 至少含 user_prompt；context/judge_rule 缺省补 ""。
+    context/judge_rule 缺省补 "" 确保下游能安全用 .get() 或索引访问。
     """
     samples = []
 
@@ -111,13 +153,16 @@ def _extract_samples(obj) -> list:
         if isinstance(item, dict):
             up = item.get("user_prompt")
             if isinstance(up, str) and up.strip():
-                ctx = item.get("context")
-                jr = item.get("judge_rule")
-                samples.append({
-                    "user_prompt": up,
-                    "context": ctx if isinstance(ctx, str) else "",
-                    "judge_rule": jr if isinstance(jr, str) else "",
-                })
+                sample = dict(item)  # 保留全部原始字段
+                sample["user_prompt"] = up
+                # 确保核心可选字段有 str 默认值，避免下游索引访问抛 KeyError
+                sample.setdefault("context", "")
+                sample.setdefault("judge_rule", "")
+                if not isinstance(sample["context"], str):
+                    sample["context"] = ""
+                if not isinstance(sample["judge_rule"], str):
+                    sample["judge_rule"] = ""
+                samples.append(sample)
 
     if isinstance(obj, list):
         for row in obj:
@@ -209,6 +254,63 @@ async def groups():
 @app.get("/api/groups")
 async def api_groups():
     return await groups()
+
+
+# ───────────────────────── 判题端点 ─────────────────────────
+
+@app.post("/api/judge/attack")
+async def judge_attack(req: JudgeAttackRequest):
+    """攻击判题：传入样本 + 无防护/模盾响应，返回 no_defense_success 和 with_shield_success。
+
+    - sample 须含 sample_id / category / user_prompt
+    - no_defense_response：无防护端点的完整返回（用于 LLM judge 判题）
+    - with_shield_response：模盾端点的完整返回（从 shield.is_safe 推断）
+    - 不传 no_defense_response 则 no_defense_success 为 null
+    """
+    result = judge_attack_case(
+        sample=req.sample,
+        no_defense_response=req.no_defense_response,
+        with_shield_response=req.with_shield_response,
+        judge_prompt_path=req.judge_prompt_path,
+        api_key=JUDGE_API_KEY or None,
+    )
+    return result
+
+
+@app.post("/api/judge/defense")
+async def judge_defense(req: JudgeDefenseRequest):
+    """防御判题：传入样本 + detect_result（0/1），返回 per-sample score。
+
+    - 优先使用 detect_result（来自 /detect/{group} 的输出）
+    - 回退使用已算好的 score（0/1），走 judge_defense_case 归一化
+    """
+    if req.detect_result is not None:
+        return judge_defense_detection_case(
+            sample=req.sample,
+            detect_result=req.detect_result,
+            score_reason=req.score_reason,
+        )
+    return judge_defense_case(
+        sample=req.sample,
+        sample_score=req.score,
+        score_reason=req.score_reason,
+    )
+
+
+@app.post("/api/judge/attack/aggregate")
+async def judge_attack_aggregate(req: JudgeAttackAggregateRequest):
+    """攻击得分汇总：传入 judged_samples 列表，返回 final_score。"""
+    summary = aggregate_attack_score(
+        req.judged_samples,
+        denominator_mode=req.denominator_mode,
+    )
+    return summary
+
+
+@app.post("/api/judge/defense/aggregate")
+async def judge_defense_aggregate(req: JudgeDefenseAggregateRequest):
+    """防御得分汇总：传入 judged_samples 列表，返回 final_score。"""
+    return aggregate_defense_score(req.judged_samples)
 
 
 # ───────────────────────── 文件上传端点 ─────────────────────────
@@ -335,7 +437,9 @@ async def root():
     return {
         "service": "ai-security-eval-server",
         "endpoints": ["/api/attack/no_defense", "/api/attack/with_shield",
-                      "/api/upload/attack", "/api/upload/defense"],
+                      "/api/upload/attack", "/api/upload/defense",
+                      "/api/judge/attack", "/api/judge/defense",
+                      "/api/judge/attack/aggregate", "/api/judge/defense/aggregate"],
         "detect": "POST /detect/{group} {user_prompt} -> 0(safe)/1(unsafe)",
         "list_groups": "/groups",
         "max_concurrent_detect": MAX_CONCURRENT_DETECT,
