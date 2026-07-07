@@ -394,12 +394,25 @@ def run_attack_pipeline(base_url: str, samples: list,
         except requests.RequestException as e:
             print(f"    ✗ judge 请求异常: {e}")
 
-    # 4) aggregate
-    print(f"\n  ── aggregate ({len(judged)}/{len(samples)} 条有效) ──")
+    # 4) aggregate — 排除 judge 无法判定的样本（None = LLM 异常）
+    valid_judged = []
+    for j in judged:
+        if shield_mode == "no_defense" and j.get("no_defense_success") is None:
+            continue
+        if shield_mode == "with_shield" and j.get("with_shield_success") is None:
+            continue
+        if shield_mode == "both" and j.get("no_defense_success") is None and j.get("with_shield_success") is None:
+            continue
+        valid_judged.append(j)
+    skipped = len(judged) - len(valid_judged)
+    if skipped:
+        print(f"  [排除] {skipped} 条因 LLM 异常无法判定，实际参与汇总: {len(valid_judged)} 条")
+
+    print(f"\n  ── aggregate ({len(valid_judged)}/{len(samples)} 条有效) ──")
     try:
         code3, agg_data, t3 = call_api(
             base_url, "/api/judge/attack/aggregate",
-            {"judged_samples": judged, "denominator_mode": "actual"},
+            {"judged_samples": valid_judged, "denominator_mode": "actual"},
             timeout)
         if code3 == 200:
             print(f"  final_score={agg_data['final_score']:.4f}  ({len(judged)} samples) [{t3:.2f}s]")
