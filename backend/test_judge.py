@@ -342,7 +342,22 @@ def run_attack_pipeline(base_url: str, samples: list,
                     with_shield_resp = ws_data
                     shield = ws_data.get("shield", {})
                     is_safe = shield.get("is_safe", "N/A")
-                    print(f"    with_shield: is_safe={is_safe} [{t:.2f}s]")
+                    err = ws_data.get("error")
+                    stopped = shield.get("stopped_at")
+                    detail = ""
+                    if is_safe is None:
+                        detail = f"  stopped_at={stopped}"
+                        if err:
+                            detail += f"  error={err}"
+                        elif stopped == "input_detection":
+                            ide = shield.get("input_detection", {}).get("detection_error")
+                            if ide:
+                                detail += f"  detection_error={ide}"
+                        elif stopped == "output_detection":
+                            ode = shield.get("output_detection", {}).get("detection_error")
+                            if ode:
+                                detail += f"  detection_error={ode}"
+                    print(f"    with_shield: is_safe={is_safe} [{t:.2f}s]{detail}")
                 else:
                     print(f"    ✗ with_shield 失败: HTTP {code}")
             except requests.RequestException as e:
